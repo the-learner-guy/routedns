@@ -1254,7 +1254,7 @@ Example config files: [well-known.toml](../cmd/routedns/example-config/well-know
 
 ### Oblivious DNS (ODoH)
 
-ODoH ([draft](https://tools.ietf.org/html/draft-pauly-dprive-oblivious-doh-03))is intended to improve privacy by encrypting queries for a **target** DNS server while sending the query through a **proxy**. In this configuration, neither the target nor the proxy can see the query content and the source IP of the client at the same time. A client query is resolved as follows:
+ODoH ([draft](https://tools.ietf.org/html/draft-pauly-dprive-oblivious-doh-03)) is intended to improve privacy of **clients** by encrypting queries for a **target** DNS server while sending the query through a **proxy**. In this configuration, neither the target nor the proxy can see the query content and the source IP of the client at the same time. A client query is resolved as follows:
 
 - The client first queries the public key of the target resolver. This is a plain query that can be resolved by any resolver, but for privacy it's best to *not* use the target for this. RouteDNS always uses the proxy for this. The response is validated with DNSSEC.
 - The client then encrypts the actual query with the public key of the target. A public key of the client is embedded in the encrypted message.
