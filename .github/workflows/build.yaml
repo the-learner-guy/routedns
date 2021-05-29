@@ -22,7 +22,7 @@ jobs:
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v2
         with:
-          workdir: ./routedns/cmd/routedns
+          workdir: ./cmd/routedns
           version: latest
           args: release --rm-dist
         env:
