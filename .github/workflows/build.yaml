@@ -1,29 +1,70 @@
-name: goreleaser
-
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 jobs:
-  goreleaser:
+  release-android-arm:
+    name: release android/arm
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v2
-        with:
-          fetch-depth: 0
-      - name: Set up Go
-        uses: actions/setup-go@v2
-        with:
-          go-version: 1.16
-      #- name: change workdir
-      #  run: cd routedns/cmd/routedns
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v2
-        with:
-          workdir: ./cmd/routedns
-          version: latest
-          args: release --rm-dist
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions/checkout@master
+    - name: Compile and upload release
+      uses: StevenCyb/sc-go-cross-build@0.1.0
+      with: 
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        platform: "android/arm"
+
+  release-android-arm64:
+    name: release android/arm64
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    - name: Compile and upload release
+      uses: StevenCyb/sc-go-cross-build@0.1.0
+      with: 
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        platform: "android/arm64"
+
+  release-linux-386:
+    name: release linux/386
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    - name: Compile and upload release
+      uses: StevenCyb/sc-go-cross-build@0.1.0
+      with: 
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        platform: "linux/386"
+
+  release-linux-amd64:
+    name: release linux/amd64
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    - name: Compile and upload release
+      uses: StevenCyb/sc-go-cross-build@0.1.0
+      with: 
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        platform: "linux/amd64"
+
+  release-windows-386:
+    name: release windows/386
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    - name: Compile and upload release
+      uses: StevenCyb/sc-go-cross-build@0.1.0
+      with: 
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        platform: "windows/386"
+
+  release-windows-amd64:
+    name: release windows/amd64
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    - name: Compile and upload release
+      uses: StevenCyb/sc-go-cross-build@0.1.0
+      with: 
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        platform: "windows/amd64"
