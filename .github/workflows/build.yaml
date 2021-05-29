@@ -17,12 +17,12 @@ jobs:
         uses: actions/setup-go@v2
         with:
           go-version: 1.16
-      - name: change workdir
-        run: cd routedns/cmd/routedns
+      #- name: change workdir
+      #  run: cd routedns/cmd/routedns
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v2
         with:
-          #workdir: /routedns/cmd/routedns
+          workdir: ./routedns/cmd/routedns
           version: latest
           args: release --rm-dist
         env:
