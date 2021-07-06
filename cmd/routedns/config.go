@@ -69,6 +69,10 @@ type group struct {
 	EDNS0Code  uint16                  `toml:"edns0-code"`  // EDNS0 modifier option code
 	EDNS0Data  []byte                  `toml:"edns0-data"`  // EDNS0 modifier option data
 
+	// Failover/Failback options
+	ResetAfter    int  `toml:"reset-after"`    // Time in seconds after which to reset resolvers in fail-back and random groups, default 60.
+	ServfailError bool `toml:"servfail-error"` // If true, SERVFAIL responses are considered errors and cause failover etc.
+
 	// Cache options
 	CacheSize                int    `toml:"cache-size"`                  // Max number of items to keep in the cache. Default 0 == unlimited
 	CacheNegativeTTL         uint32 `toml:"cache-negative-ttl"`          // TTL to apply to negative responses, default 60.
@@ -107,6 +111,11 @@ type group struct {
 	Prefix6       uint8  // Prefix bits to identify IPv6 client
 	LimitResolver string `toml:"limit-resolver"` // Resolver to use when rate-limit exceeded
 
+	// Fastest-TCP probe options
+	Port          int
+	WaitAll       bool   `toml:"wait-all"`        // Wait for all probes to return and respond with a sorted list. Generally slower
+	SuccessTTLMin uint32 `toml:"success-ttl-min"` // Set the TTL of records that were probed successfully
+
 	// Response Collapse options
 	NullRCode int `toml:"null-rcode"` // Response code if after collapsing, no answers are left
 }
@@ -123,13 +132,15 @@ type router struct {
 }
 
 type route struct {
-	Type     string // Deprecated, use "Types" instead
-	Types    []string
-	Class    string
-	Name     string
-	Source   string
-	Invert   bool // Invert the result of the match
-	Resolver string
+	Type          string // Deprecated, use "Types" instead
+	Types         []string
+	Class         string
+	Name          string
+	Source        string
+	Weekdays      []string // 'mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'
+	After, Before string   // Hour:Minute in 24h format, for example "14:30"
+	Invert        bool     // Invert the result of the match
+	Resolver      string
 }
 
 // LoadConfig reads a config file and returns the decoded structure.

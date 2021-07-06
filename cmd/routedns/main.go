@@ -274,13 +274,24 @@ func instantiateGroup(id string, g group, resolvers map[string]rdns.Resolver) er
 	case "round-robin":
 		resolvers[id] = rdns.NewRoundRobin(id, gr...)
 	case "fail-rotate":
-		resolvers[id] = rdns.NewFailRotate(id, gr...)
+		opt := rdns.FailRotateOptions{
+			ServfailError: g.ServfailError,
+		}
+		resolvers[id] = rdns.NewFailRotate(id, opt, gr...)
 	case "fail-back":
-		resolvers[id] = rdns.NewFailBack(id, rdns.FailBackOptions{ResetAfter: time.Minute}, gr...)
+		opt := rdns.FailBackOptions{
+			ResetAfter:    time.Duration(g.ResetAfter),
+			ServfailError: g.ServfailError,
+		}
+		resolvers[id] = rdns.NewFailBack(id, opt, gr...)
 	case "fastest":
 		resolvers[id] = rdns.NewFastest(id, gr...)
 	case "random":
-		resolvers[id] = rdns.NewRandom(id, rdns.RandomOptions{ResetAfter: time.Minute}, gr...)
+		opt := rdns.RandomOptions{
+			ResetAfter:    time.Duration(g.ResetAfter),
+			ServfailError: g.ServfailError,
+		}
+		resolvers[id] = rdns.NewRandom(id, opt, gr...)
 	case "blocklist":
 		if len(gr) != 1 {
 			return fmt.Errorf("type blocklist only supports one resolver in '%s'", id)
@@ -379,6 +390,16 @@ func instantiateGroup(id string, g group, resolvers map[string]rdns.Resolver) er
 			MaxTTL: g.TTLMax,
 		}
 		resolvers[id] = rdns.NewTTLModifier(id, gr[0], opt)
+	case "fastest-tcp":
+		if len(gr) != 1 {
+			return fmt.Errorf("type fastest-tcp only supports one resolver in '%s'", id)
+		}
+		opt := rdns.FastestTCPOptions{
+			Port:          g.Port,
+			WaitAll:       g.WaitAll,
+			SuccessTTLMin: g.SuccessTTLMin,
+		}
+		resolvers[id] = rdns.NewFastestTCP(id, gr[0], opt)
 	case "ecs-modifier":
 		if len(gr) != 1 {
 			return fmt.Errorf("type ecs-modifier only supports one resolver in '%s'", id)
@@ -603,7 +624,7 @@ func instantiateRouter(id string, r router, resolvers map[string]rdns.Resolver) 
 		if route.Type != "" { // Support the deprecated "Type" by just adding it to "Types" if defined
 			types = append(types, route.Type)
 		}
-		r, err := rdns.NewRoute(route.Name, route.Class, types, route.Source, resolver)
+		r, err := rdns.NewRoute(route.Name, route.Class, types, route.Weekdays, route.Before, route.After, route.Source, resolver)
 		if err != nil {
 			return fmt.Errorf("failure parsing routes for router '%s' : %s", id, err.Error())
 		}

@@ -32,6 +32,7 @@
   - [Response Collapse](#Response-Collapse)
   - [Router](#Router)
   - [Rate Limiter](#Rate-Limiter)
+  - [Fastest TCP Probe](#Fastest TCP Probe)
 - [Resolvers](#Resolvers)
   - [Plain DNS](#Plain-DNS-Resolver)
   - [DNS-over-TLS](#DNS-over-TLS-Resolver)
@@ -380,6 +381,7 @@ Round-Robin groups are instantiated with `type = "fail-rotate"` in the groups se
 Options:
 
 - `resolvers` - An array of upstream resolvers or modifiers.
+- `servfail-error` - If `true`, a SERVFAIL response from an upstream resolver is considered a failure triggering a switch to the next resolver. This can happen when DNSSEC validation fails for example. Default `false`.
 
 #### Examples
 
@@ -400,6 +402,8 @@ Fail-Back groups are instantiated with `type = "fail-back"` in the groups sectio
 Options:
 
 - `resolvers` - An array of upstream resolvers or modifiers. The first in the array is the preferred resolver.
+- `reset-after` - Time in seconds to disable a failed resolver, default 60.
+- `servfail-error` - If `true`, a SERVFAIL response from an upstream resolver is considered a failure triggering a failover. This can happen when DNSSEC validation fails for example. Default `false`.
 
 #### Examples
 
@@ -420,6 +424,8 @@ Random groups are instantiated with `type = "random"` in the groups section of t
 Options:
 
 - `resolvers` - An array of upstream resolvers or modifiers.
+- `reset-after` - Time in seconds to disable a failed resolver, default 60.
+- `servfail-error` - If `true`, a SERVFAIL response from an upstream resolver is considered a failure which will take the resolver temporarily out of the group. This can happen when DNSSEC validation fails for example. Default `false`.
 
 #### Examples
 
@@ -991,7 +997,7 @@ Example config files: [response-collapse.toml](../cmd/routedns/example-config/re
 
 ### Router
 
-Routers are used to direct queries to specific upstream resolvers, modifier, or to other routers based on the query type, name, or client information. Each router contains at least one route. Routes are are evaluated in the order they are defined and the first match will be used. Routes that match on the query name are regular expressions. Typically the last route should not have a class, type or name, making it the default route.
+Routers are used to direct queries to specific upstream resolvers, modifiers, or to other routers based on the query type, name, time of day, or client information. Each router contains at least one route. Routes are are evaluated in the order they are defined and the first match will be used. Routes that match on the query name are regular expressions. Typically the last route should not have a class, type or name, making it the default route.
 
 #### Configuration
 
@@ -1008,6 +1014,9 @@ A route has the following fields:
 - `class` - If defined, only matches queries of this class (`IN`, `CH`, `HS`, `NONE`, `ANY`). Optional.
 - `name` - A regular expression that is applied to the query name. Note that dots in domain names need to be escaped. Optional.
 - `source` - Network in CIDR notation. Used to route based on client IP. Optional.
+- `weekdays` - List of weekdays this route should match on. Possible values: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`. Uses local time, not UTC.
+- `after` - Time of day in the format HH:mm after which the rule matches. Uses 24h format. For example `09:00`. Note that together with the `before` parameter it is possible to accidentally write routes that can never trigger. For example `after=12:00 before=11:00` can never match as both conditions have to be met for the route to be used.
+- `before` - Time of day in the format HH:mm before which the rule matches. Uses 24h format. For example `17:30`.
 - `invert` - Invert the result of the matching if set to `true`. Optional.
 - `resolver` - The identifier of a resolver, group, or another router. Required.
 
@@ -1057,7 +1066,17 @@ type  = "static-responder"
 rcode = 3
 ```
 
-Example config files: [split-dns.toml](../cmd/routedns/example-config/split-dns.toml), [block-split-cache.toml](../cmd/routedns/example-config/block-split-cache.toml), [family-browsing.toml](../cmd/routedns/example-config/family-browsing.toml), [walled-garden.toml](../cmd/routedns/example-config/walled-garden.toml), [router.toml](../cmd/routedns/example-config/router.toml)
+Use a different upstream resolver on weekends between 9am and 5pm.
+
+```toml
+[routers.router1]
+routes = [
+  { weekdays = ["sat", "sun"], after = "09:00", before = "17:00", resolver="google-dot" },
+  { resolver="cloudflare-dot" },
+]
+```
+
+Example config files: [split-dns.toml](../cmd/routedns/example-config/split-dns.toml), [block-split-cache.toml](../cmd/routedns/example-config/block-split-cache.toml), [family-browsing.toml](../cmd/routedns/example-config/family-browsing.toml), [walled-garden.toml](../cmd/routedns/example-config/walled-garden.toml), [router.toml](../cmd/routedns/example-config/router.toml), [router-time.toml](../cmd/routedns/example-config/router-time.toml)
 
 ### Rate Limiter
 
@@ -1105,6 +1124,39 @@ rcode = 5 # REFUSED
 ```
 
 Example config files: [rate-limiter.toml](../cmd/routedns/example-config/rate-limiter.toml)
+
+### Fastest TCP Probe
+
+The `fastest-tcp` element will first perform a lookup, then send TCP probes to all A or AAAA records in the response. It can then either return just the A/AAAA record for the fastest response, or all A/AAAA sorted by response time (fastest first). Since probing multiple servers can be slow, it is typically used behind a [cache](#Cache) to avoid making too many probes repeatedly. Each instance can only probe one port and if different ports are to be probed depending on the query name, a router should be used in front of it as well.
+
+#### Configuration
+
+A Fastest TCP Probe element is instantiated with `type = "fastest-tcp"` in the groups section of the configuration.
+
+Options:
+
+- `resolvers` - Array of upstream resolvers, only one is supported.
+- `port` - TCP port number to probe. Default: `443`.
+- `wait-all` - Instead of just returning the fastest response, wait for all probes and return them sorted by response time (fastest first). This will generally be slower as the slowest TCP probe determines the query response time. Default: `false`
+- `success-ttl-min` - Minimum TTL of successful probes (in seconds). Default: 0. Similar to the `ttl-min` option of [TTL Modifier](#TTL-modifier). Typically used to cache the response for longer given how resource-intensive and slow probing can be.
+
+Examples:
+
+TCP probe for the HTTPS port. Successful probes are cached for 30min.
+
+```toml
+[groups.fastest-cached]
+type = "cache"
+resolvers = ["tcp-probe"]
+
+[groups.tcp-probe]
+type = "fastest-tcp"
+port = 443
+success-ttl-min = 1800
+resolvers = ["cloudflare-dot"]
+```
+
+Example config files: [fastest-tcp.toml](../cmd/routedns/example-config/fastest-tcp.toml)
 
 ## Resolvers
 
