@@ -47,6 +47,7 @@ type resolver struct {
 	ClientCrt     string `toml:"client-crt"`
 	BootstrapAddr string `toml:"bootstrap-address"`
 	LocalAddr     string `toml:"local-address"`
+	EDNS0UDPSize  uint16 `toml:"edns0-udp-size"` // UDP resolver option
 }
 
 // DoH-specific resolver options
@@ -78,6 +79,7 @@ type group struct {
 	CacheNegativeTTL         uint32 `toml:"cache-negative-ttl"`          // TTL to apply to negative responses, default 60.
 	CacheAnswerShuffle       string `toml:"cache-answer-shuffle"`        // Algorithm to use for modifying the response order of cached items
 	CacheHardenBelowNXDOMAIN bool   `toml:"cache-harden-below-nxdomain"` // Return NXDOMAIN if an NXDOMAIN is cached for a parent domain
+	CacheFlushQuery          string `toml:"cache-flush-query"`           // Flush the cache when a query for this name is received
 
 	// Blocklist options
 	Blocklist []string // Blocklist rules, only used by "blocklist" type
@@ -118,6 +120,9 @@ type group struct {
 
 	// Response Collapse options
 	NullRCode int `toml:"null-rcode"` // Response code if after collapsing, no answers are left
+
+	// Truncate-Retry options
+	RetryResolver string `toml:"retry-resolver"`
 }
 
 // Block/Allowlist items for blocklist-v2

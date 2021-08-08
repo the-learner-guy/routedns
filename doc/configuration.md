@@ -32,7 +32,9 @@
   - [Response Collapse](#Response-Collapse)
   - [Router](#Router)
   - [Rate Limiter](#Rate-Limiter)
-  - [Fastest TCP Probe](#Fastest TCP Probe)
+  - [Rate Limiter](#Rate-Limiter)
+  - [Fastest TCP Probe](#Fastest-TCP-Probe)
+  - [Retrying Truncated Responses](#Retrying-Truncated-Responses)
 - [Resolvers](#Resolvers)
   - [Plain DNS](#Plain-DNS-Resolver)
   - [DNS-over-TLS](#DNS-over-TLS-Resolver)
@@ -285,6 +287,8 @@ A cache will store the responses to queries in memory and respond to further ide
 
 Caches can be combined with a [TTL Modifier](#TTL-Modifier) to avoid too many cache-misses due to excessively low TTL values.
 
+It is possible to pre-define a query name that will flush the cache if received from a client.
+
 #### Configuration
 
 Caches are instantiated with `type = "cache"` in the groups section of the configuration.
@@ -296,6 +300,7 @@ Options:
 - `cache-negative-ttl` - TTL (in seconds) to apply to responses without a SOA. Default: 60. Optional
 - `cache-answer-shuffle` - Specifies a method for changing the order of cached A/AAAA answer records. Possible values `random` or `round-robin`. Defaults to static responses if not set.
 - `cache-harden-below-nxdomain` - Return NXDOMAIN for sudomain queries if the parent domain has a cached NXDOMAIN. See [RFC8020](https://tools.ietf.org/html/rfc8020).
+- `cache-flush-query` - A query name (FQDN with trailing `.`) that if received from a client will trigger a cache flush (reset). Inactive if not set. Simple way to support flushing the cache by sending a pre-defined query name of any type. If successful, the response will be empty. The query will not be forwarded upstream by the cache.
 
 #### Examples
 
@@ -318,7 +323,16 @@ cache-negative-ttl = 3600
 cache-answer-shuffle = "random"
 ```
 
-Example config files: [cache.toml](../cmd/routedns/example-config/cache.toml), [block-split-cache.toml](../cmd/routedns/example-config/block-split-cache.toml)
+Cache that is flushed if a query for `flush.cache.` is received.
+
+```toml
+[groups.cloudflare-cached]
+type = "cache"
+resolvers = ["cloudflare-dot"]
+cache-flush-query = "flush.cache."
+```
+
+Example config files: [cache.toml](../cmd/routedns/example-config/cache.toml), [block-split-cache.toml](../cmd/routedns/example-config/block-split-cache.toml), [cache-flush.toml](../cmd/routedns/example-config/cache-flush.toml)
 
 ### TTL modifier
 
@@ -1158,6 +1172,58 @@ resolvers = ["cloudflare-dot"]
 
 Example config files: [fastest-tcp.toml](../cmd/routedns/example-config/fastest-tcp.toml)
 
+### Retrying Truncated Responses
+
+The `truncated-retry` element will first perform a lookup using its primary resolver. If the response from the primary is truncated, the same query is retried with the secondary `retry-resolver`. This element is only useful if the primary resolver uses either plain UDP or DTLS as those apply limits to the size of the response. In addition, it is typically used behind a [cache](#Cache) which can then store the full response and respond faster to clients which too may have to retry the query if using a UDP or DTLS listener.
+
+#### Configuration
+
+To support switching to streaming resolvers on truncation, add an element with `type = "truncate-retry"` in the groups section of the configuration, right before the resolver.
+
+Options:
+
+- `resolvers` - Array of upstream resolvers, only one is supported.
+- `retry-resolver` - Must be referencing another resolver, typically using a stream-protocol such as TCP, DoH, or DoT.
+
+Examples:
+
+TCP probe for the HTTPS port. Successful probes are cached for 30min.
+
+```toml
+# Primary resolver (UDP)
+[resolvers.cloudflare-udp]
+address = "1.1.1.1:53"
+protocol = "udp"
+edns0-udp-size = 1232
+
+# TCP Fallback resolver if UDP responses are truncated
+[resolvers.cloudflare-tcp]
+address = "1.1.1.1:53"
+protocol = "tcp"
+
+# Try UDP first, if truncated use the alernative (TCP)
+[groups.retry]
+type = "truncate-retry"
+resolvers = ["cloudflare-udp"]
+retry-resolver = "cloudflare-tcp"
+
+[groups.cache]
+type = "cache"
+resolvers = ["retry"]
+
+[listeners.local-udp]
+address = "127.0.0.1:53"
+protocol = "udp"
+resolver = "cache"
+
+[listeners.local-tcp]
+address = "127.0.0.1:53"
+protocol = "tcp"
+resolver = "cache"
+```
+
+Example config files: [truncate-retry.toml](../cmd/routedns/example-config/truncate-retry.toml)
+
 ## Resolvers
 
 Resolvers forward queries to other DNS servers over the network and typically represent the end of one or many processing pipelines. Resolvers encode every query that is passed from listeners, modifiers, routers etc and send them to a DNS server without further processing. Like with other elements in the pipeline, resolvers requires a unique identifier to reference them from other elements. The following protocols are supported:
@@ -1174,6 +1240,7 @@ Resolvers are defined in the configuration like so `[resolvers.NAME]` and have t
 - `protocol` - The DNS protocol used to send queries, can be `udp`, `tcp`, `dot`, `doh`, `doq`.
 - `bootstrap-address` - Use this IP address if the name in `address` can't be resolved. Using the IP in `address` directly may not work when TLS/certificates are used by the server.
 - `local-address` - IP of the local interface to use for outgoing connections. The address is automatically chosen if this option is left blank.
+- `edns0-udp-size` - If set, modifies the EDNS0 UDP size option in all queries sent upstream. Only meaningful when using UDP or DTLS resolvers. Upstream resolvers may not respect this value and apply their own limits.
 
 Secure resolvers such as DoT, DoH, or DoQ offer additional options to configure the TLS connections.
 
@@ -1222,7 +1289,7 @@ bootstrap-address = "8.8.8.8"
 
 ### Plain DNS Resolver
 
-Plain, un-encrypted DNS protocol clients for UDP or TCP. Use `protocol = "udp"` or `protocol = "tcp"`.
+Plain, un-encrypted DNS protocol clients for UDP or TCP. Use `protocol = "udp"` or `protocol = "tcp"`. Note that UDP responses can be truncated so it is common to use use it in combination with a [truncate-retry](#Retrying-Truncated-Responses) group to define a fallback.
 
 Examples:
 
@@ -1236,7 +1303,7 @@ address = "1.1.1.1:53"
 protocol = "tcp"
 ```
 
-Example config files: [well-known.toml](../cmd/routedns/example-config/well-known.toml)
+Example config files: [well-known.toml](../cmd/routedns/example-config/well-known.toml), [truncate-retry.toml](../cmd/routedns/example-config/truncate-retry.toml)
 
 ### DNS-over-TLS Resolver
 
