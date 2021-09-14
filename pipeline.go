@@ -11,7 +11,7 @@ import (
 )
 
 // Defines how long to wait for a response from the resolver.
-const queryTimeout = time.Second
+const queryTimeout = 5 * time.Second
 
 // Tear down an upstream connection if nothing has been received for this long.
 const idleTimeout = 10 * time.Second
