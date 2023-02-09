@@ -28,6 +28,7 @@ type listener struct {
 	ServerKey  string   `toml:"server-key"`
 	ServerCrt  string   `toml:"server-crt"`
 	MutualTLS  bool     `toml:"mutual-tls"`
+	NoTLS      bool     `toml:"no-tls"` // Disable TLS in DoH servers
 	AllowedNet []string `toml:"allowed-net"`
 	Frontend   dohFrontend
 }
@@ -45,6 +46,7 @@ type resolver struct {
 	CA            string
 	ClientKey     string `toml:"client-key"`
 	ClientCrt     string `toml:"client-crt"`
+	ServerName    string `toml:"server-name"` // TLS server name presented in the server certificate
 	BootstrapAddr string `toml:"bootstrap-address"`
 	LocalAddr     string `toml:"local-address"`
 	EDNS0UDPSize  uint16 `toml:"edns0-udp-size"` // UDP resolver option
@@ -66,6 +68,7 @@ type group struct {
 	ECSPrefix6 uint8                   `toml:"ecs-prefix6"` // ECS IPv6 address prefix, 0-128. Used for "add" and "privacy"
 	TTLMin     uint32                  `toml:"ttl-min"`     // TTL minimum to apply to responses in the TTL-modifier
 	TTLMax     uint32                  `toml:"ttl-max"`     // TTL maximum to apply to responses in the TTL-modifier
+	TTLSelect  string                  `toml:"ttl-select"`  // Modifier selection function, "lowest", "highest", "average", "first", "last", "random"
 	EDNS0Op    string                  `toml:"edns0-op"`    // EDNS0 modifier operation, "add" or "delete"
 	EDNS0Code  uint16                  `toml:"edns0-code"`  // EDNS0 modifier option code
 	EDNS0Data  []byte                  `toml:"edns0-data"`  // EDNS0 modifier option data
@@ -80,6 +83,8 @@ type group struct {
 	CacheAnswerShuffle       string `toml:"cache-answer-shuffle"`        // Algorithm to use for modifying the response order of cached items
 	CacheHardenBelowNXDOMAIN bool   `toml:"cache-harden-below-nxdomain"` // Return NXDOMAIN if an NXDOMAIN is cached for a parent domain
 	CacheFlushQuery          string `toml:"cache-flush-query"`           // Flush the cache when a query for this name is received
+	PrefetchTrigger          uint32 `toml:"cache-prefetch-trigger"`      // Prefetch when the TTL of a query has fallen below this value
+	PrefetchEligible         uint32 `toml:"cache-prefetch-eligible"`     // Only records with TTL greater than this are considered for prefetch
 
 	// Blocklist options
 	Blocklist []string // Blocklist rules, only used by "blocklist" type
@@ -101,10 +106,11 @@ type group struct {
 	LocationDB        string   `toml:"location-db"` // GeoIP database file for response blocklist. Default "/usr/share/GeoIP/GeoLite2-City.mmdb"
 
 	// Static responder options
-	Answer []string
-	NS     []string
-	Extra  []string
-	RCode  int
+	Answer   []string
+	NS       []string
+	Extra    []string
+	RCode    int
+	Truncate bool `toml:"truncate"` // When true, TC-Bit is set
 
 	// Rate-limiting options
 	Requests      uint   // Number of requests allowed
@@ -123,10 +129,20 @@ type group struct {
 
 	// Truncate-Retry options
 	RetryResolver string `toml:"retry-resolver"`
+
+	// Syslog options
+	Network     string `toml:"network"`  // "udp", "tcp", "unix"
+	Address     string `toml:"address"`  // Endpoint address, defaults to local syslog server
+	Priority    string `toml:"priority"` // Syslog priority, "emergency", "alert", "critical", "error", "warning", "notice", "info", "debug"
+	Tag         string `toml:"tag"`
+	LogRequest  bool   `toml:"log-request"`  // Logs request records to syslog
+	LogResponse bool   `toml:"log-response"` // Logs response records to syslog
+	Verbose     bool   `toml:"verbose"`      // When logging responses, include types that don't match the query type
 }
 
 // Block/Allowlist items for blocklist-v2
 type list struct {
+	Name     string
 	Format   string
 	Source   string
 	CacheDir string `toml:"cache-dir"` // Where to store copies of remote blocklists for faster startup
@@ -145,7 +161,10 @@ type route struct {
 	Weekdays      []string // 'mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'
 	After, Before string   // Hour:Minute in 24h format, for example "14:30"
 	Invert        bool     // Invert the result of the match
+	DoHPath       string   `toml:"doh-path"` // DoH query path if received over DoH (regexp)
 	Resolver      string
+	Listener      string // ID of the listener that received the original request
+	TLSServerName string `toml:"servername"` // TLS servername
 }
 
 // LoadConfig reads a config file and returns the decoded structure.

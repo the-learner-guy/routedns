@@ -36,6 +36,7 @@
   - [Fastest TCP Probe](#Fastest-TCP-Probe)
   - [Retrying Truncated Responses](#Retrying-Truncated-Responses)
   - [Request Deduplication](#Request-Deduplication)
+  - [Syslog](#Syslog)
 - [Resolvers](#Resolvers)
   - [Plain DNS](#Plain-DNS-Resolver)
   - [DNS-over-TLS](#DNS-over-TLS-Resolver)
@@ -183,7 +184,7 @@ Example config files: [mutual-tls-dot-server.toml](../cmd/routedns/example-confi
 
 ### DNS-over-HTTPS
 
-As per [RFC8484](https://tools.ietf.org/html/rfc8484), DNS using the HTTPS protocol are configured with `protocol = "doh"`. By default, DoH uses TCP as transport, but it can also be run over QUIC by providing the option `transport = "quic"`.
+As per [RFC8484](https://tools.ietf.org/html/rfc8484), DNS using the HTTPS protocol are configured with `protocol = "doh"`. By default, DoH uses TCP as transport, but it can also be run over QUIC by providing the option `transport = "quic"`. For TCP transport, TLS can be disabled with the `no-tls = true` option which can be used for testing or when the server is only accessible via reverse proxy that terminates TLS already.
 
 Examples:
 
@@ -222,7 +223,7 @@ server-key = "/path/to/server.key"
 frontend = { trusted-proxy = "192.168.1.0/24" }
 ```
 
-Example config files: [mutual-tls-doh-server.toml](../cmd/routedns/example-config/mutual-tls-doh-server.toml), [doh-quic-server.toml](../cmd/routedns/example-config/doh-quic-server.toml), [doh-behind-proxy.toml](../cmd/routedns/example-config/doh-behind-proxy.toml)
+Example config files: [mutual-tls-doh-server.toml](../cmd/routedns/example-config/mutual-tls-doh-server.toml), [doh-quic-server.toml](../cmd/routedns/example-config/doh-quic-server.toml), [doh-behind-proxy.toml](../cmd/routedns/example-config/doh-behind-proxy.toml), [doh-no-tls.toml](../cmd/routedns/example-config/doh-no-tls.toml)
 
 ### DNS-over-DTLS
 
@@ -245,9 +246,9 @@ Example config files: [dtls-server.toml](../cmd/routedns/example-config/dtls-ser
 
 ### DNS-over-QUIC
 
-Similar to DoT, but uses a QUIC connection as transport as per [draft-ietf-dprive-dnsoquic-02](https://datatracker.ietf.org/doc/html/draft-ietf-dprive-dnsoquic). Configured with `protocol = "doq"`. Note that this is different from DoH over QUIC. See [DNS-over-HTTPS](#DNS-over-HTTPS) for how to configure this.
+Similar to DoT, but uses a QUIC connection as transport as per [RFC9250](https://datatracker.ietf.org/doc/rfc9250/). Configured with `protocol = "doq"`. Note that this is different from DoH over QUIC. See [DNS-over-HTTPS](#DNS-over-HTTPS) for how to configure this.
 
-Note: Support for the QUIC protocol is still experimental. For the purpose of DNS, there are two implementations, DNS-over-QUIC ([draft-ietf-dprive-dnsoquic-02](https://datatracker.ietf.org/doc/html/draft-ietf-dprive-dnsoquic)) as well as DNS-over-HTTPS using QUIC. Both methods are supported by RouteDNS, client and server implementations.
+Note: Support for the QUIC protocol is still experimental. For the purpose of DNS, there are two implementations, DNS-over-QUIC ([RFC9250](https://datatracker.ietf.org/doc/rfc9250/)) as well as DNS-over-HTTPS using QUIC. Both methods are supported by RouteDNS, client and server implementations.
 
 Examples:
 
@@ -300,8 +301,10 @@ Options:
 - `cache-size` - Max number of responses to cache. Defaults to 0 which means no limit. Optional
 - `cache-negative-ttl` - TTL (in seconds) to apply to responses without a SOA. Default: 60. Optional
 - `cache-answer-shuffle` - Specifies a method for changing the order of cached A/AAAA answer records. Possible values `random` or `round-robin`. Defaults to static responses if not set.
-- `cache-harden-below-nxdomain` - Return NXDOMAIN for sudomain queries if the parent domain has a cached NXDOMAIN. See [RFC8020](https://tools.ietf.org/html/rfc8020).
+- `cache-harden-below-nxdomain` - Return NXDOMAIN for domain queries if the parent domain has a cached NXDOMAIN. See [RFC8020](https://tools.ietf.org/html/rfc8020).
 - `cache-flush-query` - A query name (FQDN with trailing `.`) that if received from a client will trigger a cache flush (reset). Inactive if not set. Simple way to support flushing the cache by sending a pre-defined query name of any type. If successful, the response will be empty. The query will not be forwarded upstream by the cache.
+- `cache-prefetch-trigger`- If a query is received for a record with less that `cache-prefetch-trigger` TTL left, the cache will send another, independent query to upstream with the goal of automatically refreshing the record in the cache with the response.
+- `cache-prefetch-eligible` - Only records with at least `prefetch-eligible` seconds TTL are eligible to be prefetched.
 
 #### Examples
 
@@ -333,7 +336,7 @@ resolvers = ["cloudflare-dot"]
 cache-flush-query = "flush.cache."
 ```
 
-Example config files: [cache.toml](../cmd/routedns/example-config/cache.toml), [block-split-cache.toml](../cmd/routedns/example-config/block-split-cache.toml), [cache-flush.toml](../cmd/routedns/example-config/cache-flush.toml)
+Example config files: [cache.toml](../cmd/routedns/example-config/cache.toml), [block-split-cache.toml](../cmd/routedns/example-config/block-split-cache.toml), [cache-flush.toml](../cmd/routedns/example-config/cache-flush.toml), [cache-with-prefetch.toml](../cmd/routedns/example-config/cache-with-prefetch.toml)
 
 ### TTL modifier
 
@@ -348,8 +351,17 @@ Caches are instantiated with `type = "ttl-modifier"` in the groups section of th
 Options:
 
 - `resolvers` - Array of upstream resolvers, only one is supported.
-- `ttl-min` - TTL minimum (in seconds) to apply to responses
-- `ttl-max` - TTL minimum (in seconds) to apply to responses
+- `ttl-select` - Optional TTL selection function. Possible values "lowest", "highest", "average", "first", "last".
+  - `lowest` - Lowest TTL of all response records.
+  - `highest` - Highest TTL of all response records.
+  - `average` - Average TTL of all response records.
+  - `first` - First TTL.
+  - `last` - Last TTL.
+  - `random` - Random TTL between `ttl-min` and `ttl-max`. Note that not setting `ttl-max` will result in very high TTL values.
+- `ttl-min` - TTL minimum (in seconds) to apply to responses.
+- `ttl-max` - TTL minimum (in seconds) to apply to responses.
+
+`ttl-min` and `ttl-max` are optional, but if configured define a floor/ceiling regardless of what `ttl-select` function is given.
 
 #### Examples
 
@@ -363,7 +375,17 @@ ttl-min = 3600
 ttl-max = 86400
 ```
 
-Example config files: [ttl-modifier.toml](../cmd/routedns/example-config/ttl-modifier.toml)
+TTL modifier returning the average TTL of all records, with a max of 1 day.
+
+```toml
+[groups.cloudflare-updated-ttl]
+type = "ttl-modifier"
+resolvers = ["cloudflare-dot"]
+ttl-select = "average"
+ttl-max = 86400
+```
+
+Example config files: [ttl-modifier.toml](../cmd/routedns/example-config/ttl-modifier.toml), [ttl-modifier-average.toml](../cmd/routedns/example-config/ttl-modifier-average.toml)
 
 ### Round-Robin group
 
@@ -531,7 +553,7 @@ Options:
 - `blocklist-resolver` - Alternative resolver for queries matching the blocklist, rather than responding with NXDOMAIN. Optional.
 - `blocklist-format` - The format the blocklist is provided in. Only used if `blocklist-source` is not provided. Can be `regexp`, `domain`, or `hosts`. Defaults to `regexp`.
 - `blocklist-refresh` - Time interval (in seconds) in which external (remote or local) blocklists are reloaded. Optional.
-- `blocklist-source` - An array of blocklists, each with `format` and `source`.
+- `blocklist-source` - An array of blocklists, each with `format`, `source` and optionally `name`.
 - `allowlist-resolver` - Alternative resolver for queries matching the allowlist, rather than forwarding to the default resolver.
 - `allowlist-format` - The format the allowlist is provided in. Only used if `allowlist-source` is not provided. Can be `regexp`, `domain`, or `hosts`. Defaults to `regexp`.
 - `allowlist-refresh` - Time interval (in seconds) in which external allowlists are reloaded. Optional.
@@ -580,7 +602,7 @@ blocklist = [
 ]
 ```
 
-Blocklist that loads two rule-sets. One from an HTTP server, the other from a file on disk. Both are reloaded once a day.
+Blocklist that loads two rule-sets. One from an HTTP server, the other from a file on disk. Both are reloaded once a day. A `name` can be provided which will be used in logs instead of `source`.
 
 ```toml
 [groups.cloudflare-blocklist]
@@ -588,7 +610,7 @@ type = "blocklist-v2"
 resolvers = ["cloudflare-dot"]
 blocklist-refresh = 86400
 blocklist-source = [
-   {format = "domain", source = "https://raw.githubusercontent.com/cbuijs/accomplist/master/deugniets/routedns.blocklist.domain.list"},
+   {name = "cbuijs/blocklist" format = "domain", source = "https://raw.githubusercontent.com/cbuijs/accomplist/master/deugniets/routedns.blocklist.domain.list"},
    {format = "regexp", source = "/path/to/local/regexp.list"},
 ]
 ```
@@ -646,7 +668,7 @@ Options:
   - For `response-blocklist-ip`, the value can be `cidr`, or `location`. Defaults to `cidr`.
   - For `response-blocklist-name`, the value can be `regexp`, `domain`, or `hosts`. Defaults to `regexp`.
 - `blocklist-refresh` - Time interval (in seconds) in which external (remote or local) blocklists are reloaded. Optional.
-- `blocklist-source` - An array of blocklists, each with `format`, `source` and optionally `cache-dir` (see notes for [Query Blockists](#Query-Blocklist)).
+- `blocklist-source` - An array of blocklists, each with `format`, `source` and optionally `cache-dir` (see notes for [Query Blockists](#Query-Blocklist)) as well as `name` which assigns a name to the list used in logs (defaults to `source`).
 - `filter` - If set to `true` in `response-blocklist-ip`, matching records will be removed from responses rather than the whole response. If there is no answer record left after applying the filter, NXDOMAIN will be returned unless an alternative `blocklist-resolver` is defined.
 - `location-db` - If location-based IP blocking is used, this specifies the GeoIP data file to load. Optional. Defaults to /usr/share/GeoIP/GeoLite2-City.mmdb
 
@@ -700,7 +722,7 @@ blocklist-source  = [
 ]
 ```
 
-Response blocklist that is cached on local disk for faster startup
+Response blocklist that is cached on local disk for faster startup. By default, logs will contain the source (in this case the URL) of a match, but different name can be specified with `name`.
 
 ```toml
 [groups.cloudflare-blocklist]
@@ -708,7 +730,7 @@ type              = "response-blocklist-ip"
 resolvers         = ["cloudflare-dot"]
 blocklist-refresh = 86400
 blocklist-source  = [
-  {source = "https://host/block.cidr.txt", cache-dir="/var/tmp"},
+  {name = "my-block-list", source = "https://host/block.cidr.txt", cache-dir="/var/tmp"},
 ]
 ```
 
@@ -744,7 +766,7 @@ Options:
 - `blocklist-resolver` - Alternative resolver for responses matching a rule, the query will be re-sent to this resolver. Optional.
 - `blocklist-format` - The format the blocklist is provided in. Only used if `blocklist-source` is not provided. Values can be `cidr`, or `location`. Defaults to `cidr`.
 - `blocklist-refresh` - Time interval (in seconds) in which external (remote or local) blocklists are reloaded. Optional.
-- `blocklist-source` - An array of blocklists, each with `format` and `source`.
+- `blocklist-source` - An array of blocklists, each with `format` and `source` and optionally `name`.
 - `location-db` - If location-based IP blocking is used, this specifies the GeoIP data file to load. Optional. Defaults to /usr/share/GeoIP/GeoLite2-City.mmdb
 
 Examples:
@@ -878,6 +900,7 @@ Options:
 - `answer` - Array of strings, each one representing a line in zone-file format. Forms the content of the Answer records in the response. The name in all answer records is replaced with the name in the query to create a match.
 - `ns` - Array of strings, each one representing a line in zone-file format. Forms the content of the Authority records in the response.
 - `extra` - Array of strings, each one representing a line in zone-file format.  Forms the content of the Additional records in the response.
+- `truncate` - when true, TC Bit is set in response. Default is false.
 
 Note:
 
@@ -924,6 +947,14 @@ routes = [
   { resolver = "cloudflare-dot" },             # All other queries are forwarded
 ]
 ```
+
+Return an emtpy answer with TC (Truncate) bit set so the DNS client is instructed to retry the query using TCP instead of UDP.
+```toml
+[groups.static-truncate]
+type     = "static-responder"
+rcode    = 0 # NOERROR
+truncate = True
+
 
 Example config files: [walled-garden.toml](../cmd/routedns/example-config/walled-garden.toml), [rfc8482.toml](../cmd/routedns/example-config/rfc8482.toml)
 
@@ -1033,6 +1064,9 @@ A route has the following fields:
 - `after` - Time of day in the format HH:mm after which the rule matches. Uses 24h format. For example `09:00`. Note that together with the `before` parameter it is possible to accidentally write routes that can never trigger. For example `after=12:00 before=11:00` can never match as both conditions have to be met for the route to be used.
 - `before` - Time of day in the format HH:mm before which the rule matches. Uses 24h format. For example `17:30`.
 - `invert` - Invert the result of the matching if set to `true`. Optional.
+- `doh-path` - Regexp that matches on the DoH query path the client used.
+- `listener` - Regexp that matches on the ID of the listener that first received.
+- `servername` - Regexp that matches on the TLS server name used in the TLS handshake with the listener.
 - `resolver` - The identifier of a resolver, group, or another router. Required.
 
 Examples:
@@ -1227,7 +1261,7 @@ Example config files: [truncate-retry.toml](../cmd/routedns/example-config/trunc
 
 ### Request Deduplication
 
-The `request-dedup` element passed individual queries to its upstream resolver. While the first query is being processed, further queries for the same name will be blocked. Once the first query has been answered, all waiting queries are completed with the same answer. This element can be used to reduce load on upstream servers when queried by clients sending the same query multiple times.
+The `request-dedup` element passes individual queries to its upstream resolver. While the first query is being processed, further queries for the same name will be blocked. Once the first query has been answered, all waiting queries are completed with the same answer. This element can be used to reduce load on upstream servers when queried by clients sending the same query multiple times.
 
 #### Configuration
 
@@ -1260,6 +1294,41 @@ protocol = "udp"
 
 Example config files: [request-dedup.toml](../cmd/routedns/example-config/request-dedup.toml)
 
+### Syslog
+
+The `syslog` element can be used to log requests and/or responses to local or remote syslog servers. It forwards queries un-modified to the configured resolver. It is possible to configure multiple syslog loggers in different places. For example a logger could be configured to log and forward queries for domains on a blocklist, or behind a router.
+
+#### Configuration
+
+To enable syslog, add an element with `type = "syslog"` in the groups section of the configuration.
+
+Options:
+
+- `resolvers` - Array of upstream resolvers, only one is supported.
+- `network` - Network protocol. `udp`, `tcp` or `unix`. Defaults to `unix`.
+- `address` - Remote syslog server address and port. For example `192.168.0.1:514`
+- `priority` - Syslog priority. Possible values: `emergency`, `alert`, `critical`, `error`, `warning`, `notice`, `info`, `debug`
+- `tag` - Syslog tag. Defaults to the program name.
+- `log-request` - Enable logging of requests. Default `false`.
+- `log-response` - Enable logging of responses. Default `false`.
+- `verbose` - Log all answers, not just the types that match the query. Default `false`.
+
+Examples:
+
+```toml
+[groups.cloudflare-logged]
+type = "syslog"
+resolvers = ["cloudflare-dot"]
+network = "udp"
+address = "192.168.0.1:514"
+priority = "info"
+tag = "routedns"
+log-request = true
+log-response = true
+```
+
+Example config files: [syslog.toml](../cmd/routedns/example-config/syslog.toml)
+
 ## Resolvers
 
 Resolvers forward queries to other DNS servers over the network and typically represent the end of one or many processing pipelines. Resolvers encode every query that is passed from listeners, modifiers, routers etc and send them to a DNS server without further processing. Like with other elements in the pipeline, resolvers requires a unique identifier to reference them from other elements. The following protocols are supported:
@@ -1283,6 +1352,7 @@ Secure resolvers such as DoT, DoH, or DoQ offer additional options to configure 
 - `client-crt` - Client certificate file.
 - `client-key` - Client certificate key file
 - `ca` - CA certificate to validate server certificates.
+- `server-name` - Name of the certificate presented by the server if it does not match the name in the endpoint address.
 
 Examples:
 
@@ -1431,7 +1501,7 @@ Example config files: [dtls-client.toml](../cmd/routedns/example-config/dtls-cli
 
 ### DNS-over-QUIC Resolver
 
-Similar to DoT, but uses a QUIC connection as transport as per [draft-ietf-dprive-dnsoquic-02](https://datatracker.ietf.org/doc/html/draft-ietf-dprive-dnsoquic). Configured with `protocol = "doq"`. Note that this is different from DoH over QUIC. See [DNS-over-HTTPS](#DNS-over-HTTPS-Resolver) for how to configure this.
+Similar to DoT, but uses a QUIC connection as transport as per [RFC9250](https://datatracker.ietf.org/doc/rfc9250/). Configured with `protocol = "doq"`. Note that this is different from DoH over QUIC. See [DNS-over-HTTPS](#DNS-over-HTTPS-Resolver) for how to configure this.
 
 Examples:
 

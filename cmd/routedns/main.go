@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	syslog "github.com/RackSec/srslog"
 	rdns "github.com/folbricht/routedns"
 	"github.com/heimdalr/dag"
 	"github.com/sirupsen/logrus"
@@ -180,9 +182,8 @@ func start(opt options, args []string) error {
 		resolver, ok := resolvers[l.Resolver]
 		// All Listeners should route queries (except the admin service).
 		if !ok && l.Protocol != "admin" {
-			return fmt.Errorf("listener '%s' references non-existant resolver, group or router '%s'", id, l.Resolver)
+			return fmt.Errorf("listener '%s' references non-existent resolver, group or router '%s'", id, l.Resolver)
 		}
-
 		allowedNet, err := parseCIDRList(l.AllowedNet)
 		if err != nil {
 			return err
@@ -192,8 +193,10 @@ func start(opt options, args []string) error {
 
 		switch l.Protocol {
 		case "tcp":
+			l.Address = rdns.AddressWithDefault(l.Address, rdns.PlainDNSPort)
 			listeners = append(listeners, rdns.NewDNSListener(id, l.Address, "tcp", opt, resolver))
 		case "udp":
+			l.Address = rdns.AddressWithDefault(l.Address, rdns.PlainDNSPort)
 			listeners = append(listeners, rdns.NewDNSListener(id, l.Address, "udp", opt, resolver))
 		case "admin":
 			tlsConfig, err := rdns.TLSServerConfig(l.CA, l.ServerCrt, l.ServerKey, l.MutualTLS)
@@ -211,6 +214,7 @@ func start(opt options, args []string) error {
 			}
 			listeners = append(listeners, ln)
 		case "dot":
+			l.Address = rdns.AddressWithDefault(l.Address, rdns.DoTPort)
 			tlsConfig, err := rdns.TLSServerConfig(l.CA, l.ServerCrt, l.ServerKey, l.MutualTLS)
 			if err != nil {
 				return err
@@ -218,6 +222,7 @@ func start(opt options, args []string) error {
 			ln := rdns.NewDoTListener(id, l.Address, rdns.DoTListenerOptions{TLSConfig: tlsConfig, ListenOptions: opt}, resolver)
 			listeners = append(listeners, ln)
 		case "dtls":
+			l.Address = rdns.AddressWithDefault(l.Address, rdns.DTLSPort)
 			dtlsConfig, err := rdns.DTLSServerConfig(l.CA, l.ServerCrt, l.ServerKey, l.MutualTLS)
 			if err != nil {
 				return err
@@ -225,9 +230,22 @@ func start(opt options, args []string) error {
 			ln := rdns.NewDTLSListener(id, l.Address, rdns.DTLSListenerOptions{DTLSConfig: dtlsConfig, ListenOptions: opt}, resolver)
 			listeners = append(listeners, ln)
 		case "doh":
-			tlsConfig, err := rdns.TLSServerConfig(l.CA, l.ServerCrt, l.ServerKey, l.MutualTLS)
-			if err != nil {
-				return err
+			if l.Transport != "quic" {
+				l.Address = rdns.AddressWithDefault(l.Address, rdns.DoHPort)
+			} else if l.Transport == "quic" {
+				l.Address = rdns.AddressWithDefault(l.Address, rdns.DohQuicPort)
+			}
+			var tlsConfig *tls.Config
+			if l.NoTLS {
+				if l.Transport == "quic" {
+					return errors.New("no-tls is not supported for doh servers with quic transport")
+				}
+			} else {
+				fmt.Println("p4")
+				tlsConfig, err = rdns.TLSServerConfig(l.CA, l.ServerCrt, l.ServerKey, l.MutualTLS)
+				if err != nil {
+					return err
+				}
 			}
 			var httpProxyNet *net.IPNet
 			if l.Frontend.HTTPProxyNet != "" {
@@ -241,6 +259,7 @@ func start(opt options, args []string) error {
 				ListenOptions: opt,
 				Transport:     l.Transport,
 				HTTPProxyNet:  httpProxyNet,
+				NoTLS:         l.NoTLS,
 			}
 			ln, err := rdns.NewDoHListener(id, l.Address, opt, resolver)
 			if err != nil {
@@ -248,6 +267,8 @@ func start(opt options, args []string) error {
 			}
 			listeners = append(listeners, ln)
 		case "doq":
+			l.Address = rdns.AddressWithDefault(l.Address, rdns.DoQPort)
+
 			tlsConfig, err := rdns.TLSServerConfig(l.CA, l.ServerCrt, l.ServerKey, l.MutualTLS)
 			if err != nil {
 				return err
@@ -280,7 +301,7 @@ func instantiateGroup(id string, g group, resolvers map[string]rdns.Resolver) er
 	for _, rid := range g.Resolvers {
 		resolver, ok := resolvers[rid]
 		if !ok {
-			return fmt.Errorf("group '%s' references non-existant resolver or group '%s'", id, rid)
+			return fmt.Errorf("group '%s' references non-existent resolver or group '%s'", id, rid)
 		}
 		gr = append(gr, resolver)
 	}
@@ -313,7 +334,7 @@ func instantiateGroup(id string, g group, resolvers map[string]rdns.Resolver) er
 		if len(g.Blocklist) > 0 && g.Source != "" {
 			return fmt.Errorf("static blocklist can't be used with 'source' in '%s'", id)
 		}
-		blocklistDB, err := newBlocklistDB(list{Format: g.Format, Source: g.Source}, g.Blocklist)
+		blocklistDB, err := newBlocklistDB(list{Name: id, Format: g.Format, Source: g.Source}, g.Blocklist)
 		if err != nil {
 			return err
 		}
@@ -337,7 +358,7 @@ func instantiateGroup(id string, g group, resolvers map[string]rdns.Resolver) er
 		}
 		var blocklistDB rdns.BlocklistDB
 		if len(g.Blocklist) > 0 {
-			blocklistDB, err = newBlocklistDB(list{Format: g.BlocklistFormat}, g.Blocklist)
+			blocklistDB, err = newBlocklistDB(list{Name: id, Format: g.BlocklistFormat}, g.Blocklist)
 			if err != nil {
 				return err
 			}
@@ -399,9 +420,28 @@ func instantiateGroup(id string, g group, resolvers map[string]rdns.Resolver) er
 		if len(gr) != 1 {
 			return fmt.Errorf("type ttl-modifier only supports one resolver in '%s'", id)
 		}
+		var selectFunc rdns.TTLSelectFunc
+		switch g.TTLSelect {
+		case "lowest":
+			selectFunc = rdns.TTLSelectLowest
+		case "highest":
+			selectFunc = rdns.TTLSelectHighest
+		case "average":
+			selectFunc = rdns.TTLSelectAverage
+		case "first":
+			selectFunc = rdns.TTLSelectFirst
+		case "last":
+			selectFunc = rdns.TTLSelectLast
+		case "random":
+			selectFunc = rdns.TTLSelectRandom
+		case "":
+		default:
+			return fmt.Errorf("invalid ttl-select value: %q", g.TTLSelect)
+		}
 		opt := rdns.TTLModifierOptions{
-			MinTTL: g.TTLMin,
-			MaxTTL: g.TTLMax,
+			SelectFunc: selectFunc,
+			MinTTL:     g.TTLMin,
+			MaxTTL:     g.TTLMax,
 		}
 		resolvers[id] = rdns.NewTTLModifier(id, gr[0], opt)
 	case "truncate-retry":
@@ -467,12 +507,47 @@ func instantiateGroup(id string, g group, resolvers map[string]rdns.Resolver) er
 		if err != nil {
 			return err
 		}
+	case "syslog":
+		if len(gr) != 1 {
+			return fmt.Errorf("type syslog only supports one resolver in '%s'", id)
+		}
+		var priority int
+		switch g.Priority {
+		case "emergency", "":
+			priority = int(syslog.LOG_EMERG)
+		case "alert":
+			priority = int(syslog.LOG_ALERT)
+		case "critical":
+			priority = int(syslog.LOG_CRIT)
+		case "error":
+			priority = int(syslog.LOG_ERR)
+		case "warning":
+			priority = int(syslog.LOG_WARNING)
+		case "notice":
+			priority = int(syslog.LOG_NOTICE)
+		case "info":
+			priority = int(syslog.LOG_INFO)
+		case "debug":
+			priority = int(syslog.LOG_DEBUG)
+		default:
+			return fmt.Errorf("unsupported syslog priority %q", g.Priority)
+		}
+		opt := rdns.SyslogOptions{
+			Network:     g.Network,
+			Address:     g.Address,
+			Priority:    priority,
+			Tag:         g.Tag,
+			LogRequest:  g.LogRequest,
+			LogResponse: g.LogResponse,
+			Verbose:     g.Verbose,
+		}
+		resolvers[id] = rdns.NewSyslog(id, gr[0], opt)
 	case "cache":
 		var shuffleFunc rdns.AnswerShuffleFunc
 		switch g.CacheAnswerShuffle {
 		case "": // default
 		case "random":
-			shuffleFunc = rdns.AnswerShuffleRandon
+			shuffleFunc = rdns.AnswerShuffleRandom
 		case "round-robin":
 			shuffleFunc = rdns.AnswerShuffleRoundRobin
 		default:
@@ -485,6 +560,8 @@ func instantiateGroup(id string, g group, resolvers map[string]rdns.Resolver) er
 			ShuffleAnswerFunc:   shuffleFunc,
 			HardenBelowNXDOMAIN: g.CacheHardenBelowNXDOMAIN,
 			FlushQuery:          g.CacheFlushQuery,
+			PrefetchTrigger:     g.PrefetchTrigger,
+			PrefetchEligible:    g.PrefetchEligible,
 		}
 		resolvers[id] = rdns.NewCache(id, gr[0], opt)
 	case "response-blocklist-ip", "response-blocklist-cidr": // "response-blocklist-cidr" has been retired/renamed to "response-blocklist-ip"
@@ -496,7 +573,7 @@ func instantiateGroup(id string, g group, resolvers map[string]rdns.Resolver) er
 		}
 		var blocklistDB rdns.IPBlocklistDB
 		if len(g.Blocklist) > 0 {
-			blocklistDB, err = newIPBlocklistDB(list{Format: g.BlocklistFormat}, g.LocationDB, g.Blocklist)
+			blocklistDB, err = newIPBlocklistDB(list{Name: id, Format: g.BlocklistFormat}, g.LocationDB, g.Blocklist)
 			if err != nil {
 				return err
 			}
@@ -569,7 +646,7 @@ func instantiateGroup(id string, g group, resolvers map[string]rdns.Resolver) er
 		}
 		var blocklistDB rdns.IPBlocklistDB
 		if len(g.Blocklist) > 0 {
-			blocklistDB, err = newIPBlocklistDB(list{Format: g.BlocklistFormat}, g.LocationDB, g.Blocklist)
+			blocklistDB, err = newIPBlocklistDB(list{Name: id, Format: g.BlocklistFormat}, g.LocationDB, g.Blocklist)
 			if err != nil {
 				return err
 			}
@@ -599,10 +676,11 @@ func instantiateGroup(id string, g group, resolvers map[string]rdns.Resolver) er
 
 	case "static-responder":
 		opt := rdns.StaticResolverOptions{
-			Answer: g.Answer,
-			NS:     g.NS,
-			Extra:  g.Extra,
-			RCode:  g.RCode,
+			Answer:   g.Answer,
+			NS:       g.NS,
+			Extra:    g.Extra,
+			RCode:    g.RCode,
+			Truncate: g.Truncate,
 		}
 		resolvers[id], err = rdns.NewStaticResolver(id, opt)
 		if err != nil {
@@ -617,7 +695,7 @@ func instantiateGroup(id string, g group, resolvers map[string]rdns.Resolver) er
 		if len(gr) != 1 {
 			return fmt.Errorf("type response-collapse only supports one resolver in '%s'", id)
 		}
-		opt := rdns.ResponseCollapsOptions{
+		opt := rdns.ResponseCollapseOptions{
 			NullRCode: g.NullRCode,
 		}
 		resolvers[id] = rdns.NewResponseCollapse(id, gr[0], opt)
@@ -648,13 +726,13 @@ func instantiateRouter(id string, r router, resolvers map[string]rdns.Resolver) 
 	for _, route := range r.Routes {
 		resolver, ok := resolvers[route.Resolver]
 		if !ok {
-			return fmt.Errorf("router '%s' references non-existant resolver or group '%s'", id, route.Resolver)
+			return fmt.Errorf("router '%s' references non-existent resolver or group '%s'", id, route.Resolver)
 		}
 		types := route.Types
 		if route.Type != "" { // Support the deprecated "Type" by just adding it to "Types" if defined
 			types = append(types, route.Type)
 		}
-		r, err := rdns.NewRoute(route.Name, route.Class, types, route.Weekdays, route.Before, route.After, route.Source, resolver)
+		r, err := rdns.NewRoute(route.Name, route.Class, types, route.Weekdays, route.Before, route.After, route.Source, route.DoHPath, route.Listener, route.TLSServerName, resolver)
 		if err != nil {
 			return fmt.Errorf("failure parsing routes for router '%s' : %s", id, err.Error())
 		}
@@ -669,6 +747,10 @@ func newBlocklistDB(l list, rules []string) (rdns.BlocklistDB, error) {
 	loc, err := url.Parse(l.Source)
 	if err != nil {
 		return nil, err
+	}
+	name := l.Name
+	if name == "" {
+		name = l.Source
 	}
 	var loader rdns.BlocklistLoader
 	if len(rules) > 0 {
@@ -688,11 +770,11 @@ func newBlocklistDB(l list, rules []string) (rdns.BlocklistDB, error) {
 	}
 	switch l.Format {
 	case "regexp", "":
-		return rdns.NewRegexpDB(loader)
+		return rdns.NewRegexpDB(name, loader)
 	case "domain":
-		return rdns.NewDomainDB(loader)
+		return rdns.NewDomainDB(name, loader)
 	case "hosts":
-		return rdns.NewHostsDB(loader)
+		return rdns.NewHostsDB(name, loader)
 	default:
 		return nil, fmt.Errorf("unsupported format '%s'", l.Format)
 	}
@@ -702,6 +784,10 @@ func newIPBlocklistDB(l list, locationDB string, rules []string) (rdns.IPBlockli
 	loc, err := url.Parse(l.Source)
 	if err != nil {
 		return nil, err
+	}
+	name := l.Name
+	if name == "" {
+		name = l.Source
 	}
 	var loader rdns.BlocklistLoader
 	if len(rules) > 0 {
@@ -722,9 +808,9 @@ func newIPBlocklistDB(l list, locationDB string, rules []string) (rdns.IPBlockli
 
 	switch l.Format {
 	case "cidr", "":
-		return rdns.NewCidrDB(loader)
+		return rdns.NewCidrDB(name, loader)
 	case "location":
-		return rdns.NewGeoIPDB(loader, locationDB)
+		return rdns.NewGeoIPDB(name, loader, locationDB)
 	default:
 		return nil, fmt.Errorf("unsupported format '%s'", l.Format)
 	}

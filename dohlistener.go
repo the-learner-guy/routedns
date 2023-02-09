@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lucas-clemente/quic-go"
-	"github.com/lucas-clemente/quic-go/http3"
 	"github.com/miekg/dns"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/sirupsen/logrus"
 )
 
@@ -31,7 +31,7 @@ type DoHListener struct {
 	r    Resolver
 	opt  DoHListenerOptions
 
-	mux *http.ServeMux
+	handler http.Handler
 
 	metrics *DoHListenerMetrics
 }
@@ -49,6 +49,9 @@ type DoHListenerOptions struct {
 
 	// IP(v4/v6) subnet of known reverse proxies in front of this server.
 	HTTPProxyNet *net.IPNet
+
+	// Disable TLS on the server (insecure, for testing purposes only).
+	NoTLS bool
 }
 
 type DoHListenerMetrics struct {
@@ -88,10 +91,9 @@ func NewDoHListener(id, addr string, opt DoHListenerOptions, resolver Resolver) 
 		addr:    addr,
 		r:       resolver,
 		opt:     opt,
-		mux:     http.NewServeMux(),
 		metrics: NewDoHListenerMetrics(id),
 	}
-	l.mux.Handle("/dns-query", http.HandlerFunc(l.dohHandler))
+	l.handler = http.HandlerFunc(l.dohHandler)
 	return l, nil
 }
 
@@ -109,7 +111,7 @@ func (s *DoHListener) startTCP() error {
 	s.httpServer = &http.Server{
 		Addr:         s.addr,
 		TLSConfig:    s.opt.TLSConfig,
-		Handler:      s.mux,
+		Handler:      s.handler,
 		ReadTimeout:  dohServerTimeout,
 		WriteTimeout: dohServerTimeout,
 	}
@@ -119,19 +121,18 @@ func (s *DoHListener) startTCP() error {
 		return err
 	}
 	defer ln.Close()
+	if s.opt.NoTLS {
+		return s.httpServer.Serve(ln)
+	}
 	return s.httpServer.ServeTLS(ln, "", "")
 }
 
 // Start the DoH server with QUIC transport.
 func (s *DoHListener) startQUIC() error {
 	s.quicServer = &http3.Server{
-		Server: &http.Server{
-			Addr:         s.addr,
-			TLSConfig:    s.opt.TLSConfig,
-			Handler:      s.mux,
-			ReadTimeout:  dohServerTimeout,
-			WriteTimeout: dohServerTimeout,
-		},
+		Addr:       s.addr,
+		TLSConfig:  s.opt.TLSConfig,
+		Handler:    s.handler,
 		QuicConfig: &quic.Config{},
 	}
 	return s.quicServer.ListenAndServe()
@@ -239,10 +240,25 @@ func (s *DoHListener) parseAndRespond(b []byte, w http.ResponseWriter, r *http.R
 		http.Error(w, "Invalid RemoteAddr", http.StatusBadRequest)
 		return
 	}
-	ci := ClientInfo{
-		SourceIP: clientIP,
+	var tlsServerName string
+	if r.TLS != nil {
+		tlsServerName = r.TLS.ServerName
 	}
-	log := Log.WithFields(logrus.Fields{"id": s.id, "client": ci.SourceIP, "qname": qName(q), "protocol": "doh", "addr": s.addr})
+	ci := ClientInfo{
+		SourceIP:      clientIP,
+		DoHPath:       r.URL.Path,
+		TLSServerName: tlsServerName,
+		Listener:      s.id,
+	}
+	log := Log.WithFields(logrus.Fields{
+		"id":       s.id,
+		"client":   ci.SourceIP,
+		"qtype":    qType(q),
+		"qname":    qName(q),
+		"protocol": "doh",
+		"addr":     s.addr,
+		"path":     r.URL.Path,
+	})
 	log.Debug("received query")
 
 	var err error

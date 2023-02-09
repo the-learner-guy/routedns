@@ -8,7 +8,7 @@ Features:
 
 - Support for DNS-over-TLS (DoT, [RFC7858](https://tools.ietf.org/html/rfc7858)), client and server
 - Support for DNS-over-HTTPS (DoH, [RFC8484](https://tools.ietf.org/html/rfc8484)), client and server with HTTP2
-- Support for DNS-over-QUIC (doq-i02, [draft-ietf-dprive-dnsoquic-02](https://datatracker.ietf.org/doc/html/draft-ietf-dprive-dnsoquic)), client and server
+- Support for DNS-over-QUIC (DoQ, [RFC9250](https://datatracker.ietf.org/doc/rfc9250/)), client and server
 - Support for DNS-over-DTLS ([RFC8094](https://tools.ietf.org/html/rfc8094)), client and server
 - DNS-over-HTTPS using a QUIC transport, client and server
 - Custom CAs and mutual-TLS
@@ -69,6 +69,10 @@ Listen on non-standard ports:
 docker run -d --rm -p 5353:53/udp -p 5353:53/tcp -v /path/to/config.toml:/config.toml folbricht/routedns
 ```
 
+### Pre-Compiled/Build Binaries
+
+You can also fetch pre-compiled/build binaries for popular/common (router) platforms (Like Raspberry-Pi) here: https://github.com/cbuijs/routedns-binaries.
+
 ## Configuration
 
 RouteDNS supports building complex DNS processing pipelines. A typically configuration would have one or more listeners to receive queries, several modifiers and routers to process the query (or responses), and then several resolvers that pass the query to upstream DNS services. See the [Configuration Guide](doc/configuration.md) for details on how to setup a pipeline.
@@ -77,7 +81,7 @@ RouteDNS supports building complex DNS processing pipelines. A typically configu
 
 ## QUIC support
 
-Support for the QUIC protocol is still experimental. In the context of DNS, there are two implementations, DNS-over-QUIC ([draft-ietf-dprive-dnsoquic-02](https://datatracker.ietf.org/doc/html/draft-ietf-dprive-dnsoquic)) as well as DNS-over-HTTPS using QUIC. Both protocols are supported by RouteDNS, client and server implementations.
+Support for the QUIC protocol is still experimental. In the context of DNS, there are two implementations, DNS-over-QUIC (DoQ, [RFC9250](https://datatracker.ietf.org/doc/rfc9250/)) as well as DNS-over-HTTPS using QUIC. Both protocols are supported by RouteDNS, client and server implementations.
 
 ## Use-cases / Examples
 

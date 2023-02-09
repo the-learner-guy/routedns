@@ -3,13 +3,14 @@ package rdns
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"expvar"
-	"io/ioutil"
+	"io"
 	"net"
 	"time"
 
-	quic "github.com/lucas-clemente/quic-go"
 	"github.com/miekg/dns"
+	quic "github.com/quic-go/quic-go"
 	"github.com/sirupsen/logrus"
 )
 
@@ -36,9 +37,9 @@ type DoQListenerOptions struct {
 type DoQListenerMetrics struct {
 	ListenerMetrics
 
-	// Count of sessions initiated.
-	session *expvar.Int
-	// Count of streams seen in all sessions.
+	// Count of connections initiated.
+	connection *expvar.Int
+	// Count of streams seen in all connections.
 	stream *expvar.Int
 }
 
@@ -50,8 +51,8 @@ func NewDoQListenerMetrics(id string) *DoQListenerMetrics {
 			drop:     getVarInt("listener", id, "drop"),
 			err:      getVarMap("listener", id, "error"),
 		},
-		session: getVarInt("listener", id, "session"),
-		stream:  getVarInt("listener", id, "stream"),
+		connection: getVarInt("listener", id, "session"),
+		stream:     getVarInt("listener", id, "stream"),
 	}
 }
 
@@ -82,17 +83,17 @@ func (s DoQListener) Start() error {
 	s.log.Info("starting listener")
 
 	for {
-		session, err := s.ln.Accept(context.Background())
+		connection, err := s.ln.Accept(context.Background())
 		if err != nil {
 			s.log.WithError(err).Warn("failed to accept")
 			continue
 		}
-		s.log.Trace("started session")
+		s.log.Trace("started connection")
 
 		go func() {
-			s.handleSession(session)
-			_ = session.CloseWithError(DOQNoError, "")
-			s.log.Trace("closing session")
+			s.handleConnection(connection)
+			_ = connection.CloseWithError(DOQNoError, "")
+			s.log.Trace("closing connection")
 		}()
 	}
 }
@@ -103,27 +104,32 @@ func (s DoQListener) Stop() error {
 	return s.ln.Close()
 }
 
-func (s DoQListener) handleSession(session quic.Session) {
-	var ci ClientInfo
-	switch addr := session.RemoteAddr().(type) {
+func (s DoQListener) handleConnection(connection quic.Connection) {
+	tlsServerName := connection.ConnectionState().TLS.ServerName
+
+	ci := ClientInfo{
+		Listener:      s.id,
+		TLSServerName: tlsServerName,
+	}
+	switch addr := connection.RemoteAddr().(type) {
 	case *net.TCPAddr:
 		ci.SourceIP = addr.IP
 	case *net.UDPAddr:
 		ci.SourceIP = addr.IP
 	}
-	log := s.log.WithField("client", session.RemoteAddr())
+	log := s.log.WithField("client", connection.RemoteAddr())
 
 	if !isAllowed(s.opt.AllowedNet, ci.SourceIP) {
-		log.Debug("rejecting incoming session")
+		log.Debug("rejecting incoming connection")
 		s.metrics.drop.Add(1)
 		return
 	}
-	log.Trace("accepting incoming session")
-	s.metrics.session.Add(1)
+	log.Trace("accepting incoming connection")
+	s.metrics.connection.Add(1)
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second) // TODO: configurable
-		stream, err := session.AcceptStream(ctx)
+		stream, err := connection.AcceptStream(ctx)
 		if err != nil {
 			cancel()
 			break
@@ -142,10 +148,18 @@ func (s DoQListener) handleStream(stream quic.Stream, log *logrus.Entry, ci Clie
 	defer stream.Close()
 	s.metrics.stream.Add(1)
 
+	// DoQ requires a length prefix, like TCP
+	var length uint16
+	if err := binary.Read(stream, binary.BigEndian, &length); err != nil {
+		s.metrics.err.Add("read", 1)
+		log.WithError(err).Error("failed to read query")
+		return
+	}
+
 	// Read the raw query
+	b := make([]byte, length)
 	_ = stream.SetReadDeadline(time.Now().Add(time.Second)) // TODO: configurable timeout
-	b, err := ioutil.ReadAll(stream)
-	if err != nil {
+	if _, err := io.ReadFull(stream, b); err != nil {
 		s.metrics.err.Add("read", 1)
 		log.WithError(err).Error("failed to read query")
 		return
@@ -182,12 +196,17 @@ func (s DoQListener) handleStream(stream quic.Stream, log *logrus.Entry, ci Clie
 		a.SetRcode(q, dns.RcodeServerFailure)
 	}
 
-	out, err := a.Pack()
+	p, err := a.Pack()
 	if err != nil {
 		log.WithError(err).Error("failed to encode response")
 		s.metrics.err.Add("encode", 1)
 		return
 	}
+
+	// Add a length prefix
+	out := make([]byte, 2+len(p))
+	binary.BigEndian.PutUint16(out, uint16(len(p)))
+	copy(out[2:], p)
 
 	// Send the response
 	_ = stream.SetWriteDeadline(time.Now().Add(time.Second)) // TODO: configurable timeout
